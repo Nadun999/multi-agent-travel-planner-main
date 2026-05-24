@@ -1,0 +1,197 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: #07090d;
+  --color-base: #0a0d12;
+  --color-card: #11141c;
+  --color-card-2: #161a24;
+  --color-line: #1d2230;
+  --color-line-strong: #2a3142;
+  --color-ink: #e8ecf2;
+  --color-sub: #9aa2b4;
+  --color-mute: #5a6178;
+  --color-accent: #5eead4;
+  --color-accent-dim: #2c8474;
+  --color-accent-soft: #5eead41a;
+
+  --font-display: "Fraunces", "Times New Roman", serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans:
+    "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "ss02", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* ---- Ambient backdrop: single soft radial glow, top-right ---- */
+.ambient {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(
+      55rem 40rem at 88% -10%,
+      rgba(94, 234, 212, 0.08),
+      transparent 60%
+    ),
+    radial-gradient(
+      45rem 35rem at -10% 110%,
+      rgba(94, 234, 212, 0.04),
+      transparent 60%
+    );
+}
+
+/* ---- Scan line under the header ---- */
+@keyframes scan {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+.scanline {
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.scanline::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 30%;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--color-accent),
+    transparent
+  );
+  animation: scan 6s ease-in-out infinite;
+}
+
+/* ---- Soft accent glow utility ---- */
+.glow-accent {
+  box-shadow:
+    0 0 0 1px rgba(94, 234, 212, 0.22),
+    0 0 28px -4px rgba(94, 234, 212, 0.35);
+}
+
+/* ---- Pulse ring for status indicator ---- */
+@keyframes ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.7;
+  }
+  80% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.status-dot {
+  position: relative;
+}
+.status-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  animation: ring 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* ---- Blinking caret for the hero ---- */
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.caret {
+  display: inline-block;
+  width: 0.5ch;
+  background: var(--color-accent);
+  margin-left: 0.12em;
+  animation: blink 1.1s steps(1) infinite;
+  border-radius: 1px;
+}
+
+/* ---- Rotating ring for the loading button ---- */
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin-slow 1.2s linear infinite;
+}
+
+/* ---- Subtle dot flow for typing indicator ---- */
+@keyframes dot-flow {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+/* ---- Scrollbar ---- */
+.chat-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.chat-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(154, 162, 180, 0.12);
+  border-radius: 999px;
+}
+
+::selection {
+  background: rgba(94, 234, 212, 0.25);
+  color: var(--color-ink);
+}
+
+textarea,
+input {
+  caret-color: var(--color-accent);
+}

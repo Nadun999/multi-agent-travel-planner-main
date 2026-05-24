@@ -4,6 +4,7 @@ from entity import ChatRequest, ChatResponse
 from agents.tools import get_hotels, get_flights
 from agents.graph import graph
 
+conversation_history_messages = []
 
 app = FastAPI()
 
@@ -15,9 +16,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 async def hello():
     return {"message": "Hello, World!"}
+
 
 @app.get("/hotels")
 async def list_hotels():
@@ -31,10 +34,31 @@ async def list_flights():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+
+    recent_pairs = conversation_history_messages[-3:]
+    flattened_messages = []
+    for user_msg, assistant_msg in recent_pairs:
+        flattened_messages.append(user_msg)
+        flattened_messages.append(assistant_msg)
+    flattened_messages.append(request.message)
+
     initial_state = {
-        "messages": [request.message],
+        "messages": flattened_messages,
         "intent": "",
         "sub_action": "",
+        "city": None,
+        "check_in": None,
+        "check_out": None,
+        "origin": None,
+        "destination": None,
+        "flight_date": None,
+        "hotel_id": None,
+        "guest_name": None,
+        "guest_email": None,
+        "room_type": None,
+        "flight_id": None,
+        "passenger_name": None,
+        "passenger_email": None,
         "hotel_results": [],
         "flight_results": [],
         "response_text": "",
@@ -42,8 +66,12 @@ async def chat(request: ChatRequest):
 
     result = graph.invoke(initial_state)
 
+    response_text = result.get("response_text", "Something went wrong. Please try again.")
+
+    conversation_history_messages.append((request.message, response_text))
+
     return ChatResponse(
-        response=result.get("response_text", "Something went wrong. Please try again."),
+        response=response_text,
         hotels=result.get("hotel_results", []) or None,
         flights=result.get("flight_results", []) or None,
     )

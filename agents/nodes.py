@@ -1,11 +1,11 @@
 from typing import Optional, Literal
 
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
-from .tools import get_hotels, search_hotel, get_flights, search_flights
+from .tools import get_hotels, search_hotel, book_hotel, get_flights, search_flights, book_flight
 from .llm import llm
-from .prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_FOR_UNKNOWN_NODE
+from .prompts import get_system_prompt_for_unknown_node, get_system_prompt_with_history
 from .entity import GraphState
 
 
@@ -15,9 +15,9 @@ class TravelExtraction(BaseModel):
         description="Main user intent: hotel, flight, or unknown."
     )
 
-    sub_action: Literal["search", "list_all", "general"] = Field(
+    sub_action: Literal["search", "list_all","book", "general"] = Field(
         default="general",
-        description="Action type: search, list_all, or general."
+        description="Action type: search, list_all, book or general."
     )
 
     city: Optional[str] = Field(
@@ -50,19 +50,60 @@ class TravelExtraction(BaseModel):
         description="Flight date in YYYY-MM-DD format. Null if not provided."
     )
 
+    hotel_id: Optional[str] = Field(
+        default=None,
+        description="ID of the hotel to book. Null if not provided."
+    )
+
+    guest_name: Optional[str] = Field(
+        default=None,
+        description="Guest full name for hotel booking. Null if not provided."
+    )
+
+    guest_email: Optional[str] = Field(
+        default=None,
+        description="Guest email for hotel booking. Null if not provided."
+    )
+
+    room_type: Optional[str] = Field(
+        default=None,
+        description="Hotel room type such as single, double, or suite. Null if not provided."
+    )
+
+    flight_id: Optional[str] = Field(
+        default=None,
+        description="ID of the flight to book. Null if not provided."
+    )
+
+    passenger_name: Optional[str] = Field(
+        default=None,
+        description="Passenger full name for flight booking. Null if not provided."
+    )
+
+    passenger_email: Optional[str] = Field(
+        default=None,
+        description="Passenger email for flight booking. Null if not provided."
+    )
+
 
 travel_extractor = llm.with_structured_output(TravelExtraction)
 
+
 def router(state: GraphState) -> dict:
     user_message = state["messages"][-1]
+    history_messages = state["messages"][:-1]
+    
+    system_prompt = get_system_prompt_with_history("\n".join(history_messages))
+
+    invocation_messages = [SystemMessage(content=system_prompt)]
+    for i in range(0, len(history_messages), 2):
+        invocation_messages.append(HumanMessage(content=history_messages[i]))
+        if i + 1 < len(history_messages):
+            invocation_messages.append(AIMessage(content=history_messages[i + 1]))
+    invocation_messages.append(HumanMessage(content=user_message))
 
     try:
-        extracted = travel_extractor.invoke(
-            [
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=user_message),
-            ]
-        )
+        extracted = travel_extractor.invoke(invocation_messages)
 
         data = extracted.dict()
 
@@ -76,6 +117,13 @@ def router(state: GraphState) -> dict:
             "origin": None,
             "destination": None,
             "flight_date": None,
+            "hotel_id": None,
+            "guest_name": None,
+            "guest_email": None,
+            "room_type": None,
+            "flight_id": None,
+            "passenger_name": None,
+            "passenger_email": None,
         }
 
     return {
@@ -89,6 +137,15 @@ def router(state: GraphState) -> dict:
         "origin": data.get("origin"),
         "destination": data.get("destination"),
         "flight_date": data.get("flight_date"),
+
+        "hotel_id": data.get("hotel_id"),
+        "guest_name": data.get("guest_name"),
+        "guest_email": data.get("guest_email"),
+        "room_type": data.get("room_type"),
+
+        "flight_id": data.get("flight_id"),
+        "passenger_name": data.get("passenger_name"),
+        "passenger_email": data.get("passenger_email"),
 
         "hotel_results": [],
         "flight_results": [],
@@ -179,7 +236,50 @@ def hotel_node(state: GraphState) -> dict:
     check_in = state.get("check_in")
     check_out = state.get("check_out")
 
-    if city:
+    if state.get("sub_action") == "book":
+        hotel_id = state.get("hotel_id")
+        guest_name = state.get("guest_name")
+        guest_email = state.get("guest_email")
+        room_type = state.get("room_type")
+        check_in_date = state.get("check_in")
+        check_out_date = state.get("check_out")
+
+        missing = [
+            field
+            for field, value in [
+                ("hotel_id", hotel_id),
+                ("guest_name", guest_name),
+                ("guest_email", guest_email),
+                ("check_in", check_in_date),
+                ("check_out", check_out_date),
+                ("room_type", room_type),
+            ]
+            if not value
+        ]
+
+        if missing:
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": (
+                    "I need more details to book the hotel. "
+                    "Please provide hotel_id, guest_name, guest_email, room_type, "
+                    "check_in, and check_out."
+                ),
+            }
+
+        result = book_hotel.invoke(
+            {
+                "hotel_id": hotel_id,
+                "guest_name": guest_name,
+                "guest_email": guest_email,
+                "check_in_date": check_in_date,
+                "check_out_date": check_out_date,
+                "room_type": room_type,
+            }
+        )
+
+    elif city:
         params = {
             "city": city,
         }
@@ -194,6 +294,21 @@ def hotel_node(state: GraphState) -> dict:
 
     else:
         result = get_hotels.invoke({})
+
+    if state.get("sub_action") == "book":
+        if isinstance(result, dict):
+            confirmation = result.get("message") or result.get("status") or "Hotel booking completed."
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": confirmation,
+            }
+
+        return {
+            "hotel_results": [],
+            "flight_results": [],
+            "response_text": "Hotel booking completed.",
+        }
 
     if isinstance(result, dict):
         hotel_results = result.get("hotels", [])
@@ -224,7 +339,40 @@ def flight_node(state: GraphState) -> dict:
     destination = state.get("destination")
     flight_date = state.get("flight_date")
 
-    if origin and destination:
+    if state.get("sub_action") == "book":
+        flight_id = state.get("flight_id")
+        passenger_name = state.get("passenger_name")
+        passenger_email = state.get("passenger_email")
+
+        missing = [
+            field
+            for field, value in [
+                ("flight_id", flight_id),
+                ("passenger_name", passenger_name),
+                ("passenger_email", passenger_email),
+            ]
+            if not value
+        ]
+
+        if missing:
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": (
+                    "I need more details to book the flight. "
+                    "Please provide flight_id, passenger_name, and passenger_email."
+                ),
+            }
+
+        result = book_flight.invoke(
+            {
+                "flight_id": flight_id,
+                "passenger_name": passenger_name,
+                "passenger_email": passenger_email,
+            }
+        )
+
+    elif origin and destination:
         params = {
             "origin": origin,
             "destination": destination,
@@ -247,6 +395,21 @@ def flight_node(state: GraphState) -> dict:
 
     else:
         result = get_flights.invoke({})
+
+    if state.get("sub_action") == "book":
+        if isinstance(result, dict):
+            confirmation = result.get("message") or result.get("status") or "Flight booking completed."
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": confirmation,
+            }
+
+        return {
+            "hotel_results": [],
+            "flight_results": [],
+            "response_text": "Flight booking completed.",
+        }
 
     if isinstance(result, dict):
         flight_results = result.get("flights", [])
@@ -274,14 +437,19 @@ def flight_node(state: GraphState) -> dict:
 
 def unknown_node(state: GraphState) -> dict:
     user_message = state["messages"][-1]
+    history_messages = state["messages"][:-1]
+
+    system_prompt = get_system_prompt_for_unknown_node("\n".join(history_messages))
+
+    invocation_messages = [SystemMessage(content=system_prompt)]
+    for i in range(0, len(history_messages), 2):
+        invocation_messages.append(HumanMessage(content=history_messages[i]))
+        if i + 1 < len(history_messages):
+            invocation_messages.append(AIMessage(content=history_messages[i + 1]))
+    invocation_messages.append(HumanMessage(content=user_message))
 
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=SYSTEM_PROMPT_FOR_UNKNOWN_NODE),
-                HumanMessage(content=user_message),
-            ]
-        )
+        response = llm.invoke(invocation_messages)
 
         return {
             "hotel_results": [],

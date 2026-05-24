@@ -58,13 +58,47 @@ curl -X POST http://localhost:8000/chat \
 
 **Other queries to try:**
 - "show me all hotels"
-- "book a hotel in Miami"
 - "find flights from New York to London"
 - "show all flights"
 
-## Gradio Chat UI
+## Booking
 
-A simple Gradio chat interface is available in `gradio_app.py`.
+The agent can book hotels and flights through the same `/chat` endpoint.
+First search for options — each result carries an `_id` (shown on the
+cards in the React UI, where you can click to copy it). Then reference
+that id in a booking request and include the required details.
+
+**Book a hotel** — needs `hotel_id`, `guest_name`, `guest_email`,
+`room_type`, `check_in`, and `check_out`:
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "book hotel H123 for John Doe (john.doe@example.com), suite, from 2026-06-01 to 2026-06-05"}'
+```
+
+**Book a flight** — needs `flight_id`, `passenger_name`, and
+`passenger_email`:
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "book flight F456 for Jane Smith with email jane.smith@example.com"}'
+```
+
+If any required field is missing, the agent replies asking for the
+specific details it still needs.
+
+### Conversation context
+
+The backend keeps the recent conversation history and threads it into
+the prompt, so follow-up messages work without repeating everything —
+e.g. search flights, then say "book the first one for Jane
+(jane@example.com)".
+
+## React Chat UI
+
+A React + Vite chat interface lives in `frontend/`.
 
 Run the FastAPI backend first:
 
@@ -72,17 +106,27 @@ Run the FastAPI backend first:
 python main.py
 ```
 
-Then start the Gradio UI:
+Then start the frontend dev server:
 
 ```bash
-python gradio_app.py
+cd frontend
+npm install
+npm run dev
 ```
 
-Open the local Gradio URL shown in the terminal and ask for flights or hotels.
+Open the local URL shown in the terminal (default `http://localhost:5173`).
+Set `VITE_API_URL` to point at a non-default backend, e.g.
+`VITE_API_URL=http://127.0.0.1:8000/chat npm run dev`.
 
 ## Tech Stack
 
+**Backend**
 - **FastAPI** - Web framework
-- **LangChain** - Agent framework
+- **LangChain / LangGraph** - Agent framework
 - **OpenAI** - LLM (GPT-4o-mini)
 - **python-dotenv** - Environment config
+
+**Frontend**
+- **React + Vite + TypeScript**
+- **Tailwind CSS** - Styling
+- **Motion** - Animations
