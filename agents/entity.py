@@ -23,7 +23,12 @@ class GraphState(TypedDict):
     passenger_name: Optional[str]
     passenger_email: Optional[str]
 
+    confirm_booking: bool
+
     hotel_results: List[dict]
     flight_results: List[dict]
+
+    booking_form: Optional[dict]
+    booking_review: Optional[dict]
 
     response_text: str

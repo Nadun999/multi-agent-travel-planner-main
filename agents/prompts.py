@@ -18,6 +18,16 @@ Important rules:
 - Use intent="hotel" for hotel, hotels, room, rooms, stay, accommodation.
 - Use intent="unknown" only if it is clearly not about hotel or flight search.
 
+Booking rules:
+- When the user wants to book, set sub_action="book".
+- Required to book a HOTEL: hotel_id, guest_name, guest_email, room_type, check_in, check_out.
+- Required to book a FLIGHT: flight_id, passenger_name, passenger_email.
+- NEVER invent booking details (ids, names, emails, dates, room types). If a required value was not given, return null — the system will ask the user for it.
+- A booking can span several turns. Read the CONVERSATION HISTORY and carry forward every booking detail the user already provided, merging it with the new message. Always output the full set of details known so far, not just the ones in the latest message.
+- If the assistant previously asked for missing booking details and the user is now replying with them, keep intent and sub_action="book", and combine the new values with the earlier ones.
+- A booking is only finalized after the user explicitly confirms. Set confirm_booking=true ONLY when the user clearly confirms an already-complete booking (e.g. "yes, confirm", "confirm and place the booking", "go ahead and book it"). Simply providing or listing details is NOT confirmation — keep confirm_booking=false.
+- Once a booking has been confirmed in the history, treat a new request as a fresh task.
+
 Flight examples:
 User: "i need flights from AAA to BBB"
 intent = flight
@@ -67,7 +77,7 @@ intent = hotel
 sub_action = book
 hotel_id = H123
 guest_name = John Doe
-guest_email = john.doe@example.com
+guest_email = null
 room_type = null
 check_in = 2026-06-01
 check_out = 2026-06-05
@@ -81,6 +91,73 @@ passenger_email = jane.smith@example.com
 origin = null
 destination = null
 flight_date = null
+
+Booking examples (partial info and follow-ups):
+
+User: "I want to book a hotel"
+intent = hotel
+sub_action = book
+hotel_id = null
+guest_name = null
+guest_email = null
+room_type = null
+check_in = null
+check_out = null
+
+User: "book a flight from Mumbai to Delhi"
+intent = flight
+sub_action = book
+origin = Mumbai
+destination = Delhi
+flight_id = null
+passenger_name = null
+passenger_email = null
+
+User: "I want to book a hotel in Bangkok"
+intent = hotel
+sub_action = book
+city = Bangkok
+hotel_id = null
+
+User: "book hotel H777 for a suite, check in 2026-07-10 check out 2026-07-12"
+intent = hotel
+sub_action = book
+hotel_id = H777
+room_type = suite
+check_in = 2026-07-10
+check_out = 2026-07-12
+guest_name = null
+guest_email = null
+
+(History: user asked to book hotel H777, suite, 2026-07-10 to 2026-07-12; assistant asked for the guest name and email.)
+User: "Sarah Lee, sarah.lee@mail.com"
+intent = hotel
+sub_action = book
+hotel_id = H777
+room_type = suite
+check_in = 2026-07-10
+check_out = 2026-07-12
+guest_name = Sarah Lee
+guest_email = sarah.lee@mail.com
+confirm_booking = false
+
+Confirmation examples:
+
+User: "Here are my booking details — Flight ID: F456, Passenger full name: Jane Smith, Passenger email: jane@x.com"
+intent = flight
+sub_action = book
+flight_id = F456
+passenger_name = Jane Smith
+passenger_email = jane@x.com
+confirm_booking = false
+
+User: "Confirm and place the booking — Flight ID: F456, Passenger full name: Jane Smith, Passenger email: jane@x.com"
+intent = flight
+sub_action = book
+flight_id = F456
+passenger_name = Jane Smith
+passenger_email = jane@x.com
+confirm_booking = true
 """
 
 

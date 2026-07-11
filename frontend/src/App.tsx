@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { sendChat } from './api'
-import type { ChatMessage } from './types'
+import { sendChatStream } from './api'
+import type { ChatMessage, TraceStep } from './types'
 import { Header } from './components/Header'
-import { MessageBubble, TypingBubble } from './components/MessageBubble'
+import { MessageBubble } from './components/MessageBubble'
+import { LiveThinking } from './components/LiveThinking'
 import { Composer } from './components/Composer'
 import { RippleCanvas } from './components/RippleCanvas'
 
@@ -71,6 +72,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [liveTrace, setLiveTrace] = useState<TraceStep[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -78,10 +80,9 @@ function App() {
       top: scrollRef.current.scrollHeight,
       behavior: 'smooth',
     })
-  }, [messages, loading])
+  }, [messages, loading, liveTrace])
 
-  async function handleSend() {
-    const text = input.trim()
+  async function send(text: string) {
     if (!text || loading) return
 
     const userMsg: ChatMessage = {
@@ -90,21 +91,27 @@ function App() {
       text,
     }
     setMessages((prev) => [...prev, userMsg])
-    setInput('')
     setLoading(true)
+    setLiveTrace([])
 
     try {
-      const data = await sendChat(text)
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          text: data.response ?? 'No response returned.',
-          flights: data.flights ?? undefined,
-          hotels: data.hotels ?? undefined,
-        },
-      ])
+      await sendChatStream(text, {
+        onStep: (step) => setLiveTrace((prev) => [...prev, step]),
+        onDone: (data) =>
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              text: data.response ?? 'No response returned.',
+              flights: data.flights ?? undefined,
+              hotels: data.hotels ?? undefined,
+              trace: data.trace ?? undefined,
+              bookingForm: data.booking_form ?? undefined,
+              bookingReview: data.booking_review ?? undefined,
+            },
+          ]),
+      })
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -116,7 +123,15 @@ function App() {
       ])
     } finally {
       setLoading(false)
+      setLiveTrace([])
     }
+  }
+
+  function handleSend() {
+    const text = input.trim()
+    if (!text || loading) return
+    setInput('')
+    void send(text)
   }
 
   return (
@@ -136,12 +151,16 @@ function App() {
           ) : (
             <AnimatePresence initial={false}>
               {messages.map((m) => (
-                <MessageBubble key={m.id} message={m} />
+                <MessageBubble key={m.id} message={m} onBookingSubmit={send} />
               ))}
             </AnimatePresence>
           )}
 
-          {loading && <TypingBubble />}
+          {loading && (
+            <div className="flex justify-start">
+              <LiveThinking steps={liveTrace} />
+            </div>
+          )}
         </div>
       </main>
 

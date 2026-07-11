@@ -85,8 +85,101 @@ class TravelExtraction(BaseModel):
         description="Passenger email for flight booking. Null if not provided."
     )
 
+    confirm_booking: bool = Field(
+        default=False,
+        description=(
+            "True ONLY when the user explicitly confirms they want to finalize "
+            "an already-complete booking (e.g. 'yes, confirm', 'place the "
+            "booking', 'go ahead and book it'). Merely providing or listing "
+            "booking details is NOT confirmation — return false."
+        ),
+    )
+
 
 travel_extractor = llm.with_structured_output(TravelExtraction)
+
+
+# Booking field metadata: (state_key, label, input_type, options)
+HOTEL_BOOKING_FIELDS = [
+    ("hotel_id", "Hotel ID", "text", None),
+    ("check_in", "Check-in date", "date", None),
+    ("check_out", "Check-out date", "date", None),
+    ("room_type", "Room type", "select", ["single", "double", "suite"]),
+    ("guest_name", "Guest full name", "text", None),
+    ("guest_email", "Guest email", "email", None),
+]
+
+FLIGHT_BOOKING_FIELDS = [
+    ("flight_id", "Flight ID", "text", None),
+    ("passenger_name", "Passenger full name", "text", None),
+    ("passenger_email", "Passenger email", "email", None),
+]
+
+
+def _humanjoin(items: list) -> str:
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _booking_followup(state: dict, fields: list, what: str) -> Optional[str]:
+    """Build a slot-filling question for a booking missing required fields.
+
+    Returns None when every field is present (ready to book). Echoes the
+    details already gathered so the user — and the next extraction pass —
+    can see the accumulated booking state.
+    """
+    known = [(label, state.get(name)) for name, label, _, _ in fields if state.get(name)]
+    missing = [label for name, label, _, _ in fields if not state.get(name)]
+
+    if not missing:
+        return None
+
+    parts = []
+    if known:
+        summary = ", ".join(f"{label}: {value}" for label, value in known)
+        parts.append(f"So far I have {summary}.")
+    parts.append(f"To book your {what}, please also provide {_humanjoin(missing)}.")
+    return " ".join(parts)
+
+
+def _booking_form(state: dict, fields: list, kind: str, title: str) -> Optional[dict]:
+    """Structured form for the UI to render. None when ready to book.
+
+    Includes every field (known ones prefilled) so the client can show
+    the full booking and only require the blanks.
+    """
+    if all(state.get(name) for name, _, _, _ in fields):
+        return None
+
+    return {
+        "kind": kind,
+        "title": title,
+        "fields": [
+            {
+                "name": name,
+                "label": label,
+                "type": input_type,
+                "value": state.get(name),
+                "options": options,
+            }
+            for name, label, input_type, options in fields
+        ],
+    }
+
+
+def _booking_review(state: dict, fields: list, kind: str, title: str) -> dict:
+    """Read-only summary of a complete booking, shown for final confirmation."""
+    return {
+        "kind": kind,
+        "title": title,
+        "items": [
+            {"label": label, "value": state.get(name)}
+            for name, label, _, _ in fields
+        ],
+    }
 
 
 def router(state: GraphState) -> dict:
@@ -124,6 +217,7 @@ def router(state: GraphState) -> dict:
             "flight_id": None,
             "passenger_name": None,
             "passenger_email": None,
+            "confirm_booking": False,
         }
 
     return {
@@ -146,6 +240,8 @@ def router(state: GraphState) -> dict:
         "flight_id": data.get("flight_id"),
         "passenger_name": data.get("passenger_name"),
         "passenger_email": data.get("passenger_email"),
+
+        "confirm_booking": bool(data.get("confirm_booking")),
 
         "hotel_results": [],
         "flight_results": [],
@@ -231,6 +327,14 @@ def _format_flight(flight: dict) -> str:
 
 
 
+def _as_list(result, key: str) -> list:
+    if isinstance(result, dict):
+        return result.get(key, [])
+    if isinstance(result, list):
+        return result
+    return []
+
+
 def hotel_node(state: GraphState) -> dict:
     city = state.get("city")
     check_in = state.get("check_in")
@@ -238,84 +342,98 @@ def hotel_node(state: GraphState) -> dict:
 
     if state.get("sub_action") == "book":
         hotel_id = state.get("hotel_id")
-        guest_name = state.get("guest_name")
-        guest_email = state.get("guest_email")
-        room_type = state.get("room_type")
-        check_in_date = state.get("check_in")
-        check_out_date = state.get("check_out")
 
-        missing = [
-            field
-            for field, value in [
-                ("hotel_id", hotel_id),
-                ("guest_name", guest_name),
-                ("guest_email", guest_email),
-                ("check_in", check_in_date),
-                ("check_out", check_out_date),
-                ("room_type", room_type),
-            ]
-            if not value
-        ]
-
-        if missing:
+        # No hotel chosen yet — show options to pick from instead of
+        # asking for an ID the user can't know.
+        if not hotel_id:
+            if city:
+                params = {"city": city}
+                if check_in:
+                    params["checkIn"] = check_in
+                if check_out:
+                    params["checkOut"] = check_out
+                hotels = _as_list(search_hotel.invoke(params), "hotels")
+                if hotels:
+                    return {
+                        "hotel_results": hotels,
+                        "flight_results": [],
+                        "response_text": (
+                            f"Here are hotels in {city}. Pick one to book, "
+                            "or tell me the hotel ID."
+                        ),
+                    }
+                return {
+                    "hotel_results": [],
+                    "flight_results": [],
+                    "response_text": (
+                        f"I couldn't find hotels in {city}. Try another city."
+                    ),
+                }
             return {
                 "hotel_results": [],
                 "flight_results": [],
                 "response_text": (
-                    "I need more details to book the hotel. "
-                    "Please provide hotel_id, guest_name, guest_email, room_type, "
-                    "check_in, and check_out."
+                    "Which hotel would you like to book? Tell me the city "
+                    "(for example, 'hotels in Bangkok') and I'll show you options "
+                    "to choose from."
+                ),
+            }
+
+        # Hotel chosen — collect the remaining details.
+        followup = _booking_followup(state, HOTEL_BOOKING_FIELDS, "hotel")
+        if followup:
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": followup,
+                "booking_form": _booking_form(
+                    state, HOTEL_BOOKING_FIELDS, "hotel", "Book your hotel"
+                ),
+            }
+
+        # All details present — require an explicit confirmation first.
+        if not state.get("confirm_booking"):
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": "Please review your hotel booking and confirm to finalize it.",
+                "booking_review": _booking_review(
+                    state, HOTEL_BOOKING_FIELDS, "hotel", "Confirm your hotel booking"
                 ),
             }
 
         result = book_hotel.invoke(
             {
                 "hotel_id": hotel_id,
-                "guest_name": guest_name,
-                "guest_email": guest_email,
-                "check_in_date": check_in_date,
-                "check_out_date": check_out_date,
-                "room_type": room_type,
+                "guest_name": state.get("guest_name"),
+                "guest_email": state.get("guest_email"),
+                "check_in_date": state.get("check_in"),
+                "check_out_date": state.get("check_out"),
+                "room_type": state.get("room_type"),
             }
         )
 
-    elif city:
-        params = {
-            "city": city,
+        confirmation = "Hotel booking completed."
+        if isinstance(result, dict):
+            confirmation = result.get("message") or result.get("status") or confirmation
+        return {
+            "hotel_results": [],
+            "flight_results": [],
+            "response_text": confirmation,
         }
 
+    elif city:
+        params = {"city": city}
         if check_in:
             params["checkIn"] = check_in
-
         if check_out:
             params["checkOut"] = check_out
-
         result = search_hotel.invoke(params)
 
     else:
         result = get_hotels.invoke({})
 
-    if state.get("sub_action") == "book":
-        if isinstance(result, dict):
-            confirmation = result.get("message") or result.get("status") or "Hotel booking completed."
-            return {
-                "hotel_results": [],
-                "flight_results": [],
-                "response_text": confirmation,
-            }
-
-        return {
-            "hotel_results": [],
-            "flight_results": [],
-            "response_text": "Hotel booking completed.",
-        }
-
-    if isinstance(result, dict):
-        hotel_results = result.get("hotels", [])
-    elif isinstance(result, list):
-        hotel_results = result
-    else:
-        hotel_results = []
+    hotel_results = _as_list(result, "hotels")
 
     if not hotel_results:
         return {
@@ -341,46 +459,86 @@ def flight_node(state: GraphState) -> dict:
 
     if state.get("sub_action") == "book":
         flight_id = state.get("flight_id")
-        passenger_name = state.get("passenger_name")
-        passenger_email = state.get("passenger_email")
 
-        missing = [
-            field
-            for field, value in [
-                ("flight_id", flight_id),
-                ("passenger_name", passenger_name),
-                ("passenger_email", passenger_email),
-            ]
-            if not value
-        ]
-
-        if missing:
+        # No flight chosen yet — show matching flights to pick from
+        # instead of asking for an ID the user can't know.
+        if not flight_id:
+            if origin and destination:
+                params = {"origin": origin, "destination": destination}
+                if flight_date:
+                    params["date"] = flight_date
+                flights = _as_list(search_flights.invoke(params), "flights")
+                if flights:
+                    return {
+                        "hotel_results": [],
+                        "flight_results": flights,
+                        "response_text": (
+                            f"Here are flights from {origin} to {destination}. "
+                            "Pick one to book, or tell me the flight ID."
+                        ),
+                    }
+                return {
+                    "hotel_results": [],
+                    "flight_results": [],
+                    "response_text": (
+                        f"I couldn't find flights from {origin} to {destination}. "
+                        "Try another route."
+                    ),
+                }
             return {
                 "hotel_results": [],
                 "flight_results": [],
                 "response_text": (
-                    "I need more details to book the flight. "
-                    "Please provide flight_id, passenger_name, and passenger_email."
+                    "Which flight would you like to book? Tell me the route "
+                    "(for example, 'flights from Mumbai to Delhi') and I'll show "
+                    "you the options to choose from."
+                ),
+            }
+
+        # Flight chosen — collect passenger details.
+        followup = _booking_followup(state, FLIGHT_BOOKING_FIELDS, "flight")
+        if followup:
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": followup,
+                "booking_form": _booking_form(
+                    state, FLIGHT_BOOKING_FIELDS, "flight", "Book your flight"
+                ),
+            }
+
+        # All details present — require an explicit confirmation first.
+        if not state.get("confirm_booking"):
+            return {
+                "hotel_results": [],
+                "flight_results": [],
+                "response_text": "Please review your flight booking and confirm to finalize it.",
+                "booking_review": _booking_review(
+                    state, FLIGHT_BOOKING_FIELDS, "flight", "Confirm your flight booking"
                 ),
             }
 
         result = book_flight.invoke(
             {
                 "flight_id": flight_id,
-                "passenger_name": passenger_name,
-                "passenger_email": passenger_email,
+                "passenger_name": state.get("passenger_name"),
+                "passenger_email": state.get("passenger_email"),
             }
         )
 
-    elif origin and destination:
-        params = {
-            "origin": origin,
-            "destination": destination,
+        confirmation = "Flight booking completed."
+        if isinstance(result, dict):
+            confirmation = result.get("message") or result.get("status") or confirmation
+        return {
+            "hotel_results": [],
+            "flight_results": [],
+            "response_text": confirmation,
         }
 
+    elif origin and destination:
+        params = {"origin": origin, "destination": destination}
         if flight_date:
             params["date"] = flight_date
-
         result = search_flights.invoke(params)
 
     elif origin or destination:
@@ -396,27 +554,7 @@ def flight_node(state: GraphState) -> dict:
     else:
         result = get_flights.invoke({})
 
-    if state.get("sub_action") == "book":
-        if isinstance(result, dict):
-            confirmation = result.get("message") or result.get("status") or "Flight booking completed."
-            return {
-                "hotel_results": [],
-                "flight_results": [],
-                "response_text": confirmation,
-            }
-
-        return {
-            "hotel_results": [],
-            "flight_results": [],
-            "response_text": "Flight booking completed.",
-        }
-
-    if isinstance(result, dict):
-        flight_results = result.get("flights", [])
-    elif isinstance(result, list):
-        flight_results = result
-    else:
-        flight_results = []
+    flight_results = _as_list(result, "flights")
 
     if not flight_results:
         return {

@@ -5,9 +5,11 @@ import { IdTag } from './IdTag'
 export function HotelKey({
   hotel,
   index = 0,
+  onBook,
 }: {
   hotel: Hotel
   index?: number
+  onBook?: (id: string) => void
 }) {
   const city = hotel.city ?? hotel.location?.city ?? ''
   const price = hotel.pricePerNight ?? hotel.price ?? hotel.currency ?? ''
@@ -42,8 +44,17 @@ export function HotelKey({
       )}
 
       {hotel._id && (
-        <div className="mt-3 border-t border-line pt-2.5">
+        <div className="mt-3 flex items-center justify-between border-t border-line pt-2.5">
           <IdTag id={hotel._id} />
+          {onBook && (
+            <button
+              type="button"
+              onClick={() => onBook(hotel._id!)}
+              className="rounded-md border border-accent/40 bg-accent/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-accent transition-colors hover:bg-accent/20"
+            >
+              Book
+            </button>
+          )}
         </div>
       )}
     </motion.div>

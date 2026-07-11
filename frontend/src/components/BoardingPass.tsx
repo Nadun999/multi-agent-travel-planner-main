@@ -11,9 +11,11 @@ function airportCode(airport?: string) {
 export function BoardingPass({
   flight,
   index = 0,
+  onBook,
 }: {
   flight: Flight
   index?: number
+  onBook?: (id: string) => void
 }) {
   return (
     <motion.div
@@ -71,8 +73,17 @@ export function BoardingPass({
       </div>
 
       {flight._id && (
-        <div className="mt-3 border-t border-line pt-2.5">
+        <div className="mt-3 flex items-center justify-between border-t border-line pt-2.5">
           <IdTag id={flight._id} />
+          {onBook && (
+            <button
+              type="button"
+              onClick={() => onBook(flight._id!)}
+              className="rounded-md border border-accent/40 bg-accent/10 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-accent transition-colors hover:bg-accent/20"
+            >
+              Book
+            </button>
+          )}
         </div>
       )}
     </motion.div>
