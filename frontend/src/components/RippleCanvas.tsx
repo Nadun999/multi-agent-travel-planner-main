@@ -41,19 +41,24 @@ const BASE_R = 94
 const BASE_G = 234
 const BASE_B = 212
 
-// Specular near-white tinted toward mint (the crest "shine")
-const SPEC_R = 220
-const SPEC_G = 255
-const SPEC_B = 248
+// Specular near-white tinted toward mint (the crest "shine").
+// Toned down from a warm-white to a soft mint so highlights don't punch out
+// of the background layer.
+const SPEC_R = 150
+const SPEC_G = 200
+const SPEC_B = 188
 
 // Chromatic aberration strength. Offset (in grid cells) is proportional
-// to gradient magnitude, capped at MAX_CA_OFFSET. Strong gradients =
-// stronger refraction = larger color split.
-const CA_STRENGTH = 38
-const MAX_CA_OFFSET = 4
+// to gradient magnitude, capped at MAX_CA_OFFSET. Kept low so the rim
+// fringing reads as a subtle refractive cue, not a rainbow.
+const CA_STRENGTH = 18
+const MAX_CA_OFFSET = 2
 
-const ACTIVITY_GAIN = 0.07
+const ACTIVITY_GAIN = 0.06
 const ACTIVITY_CUTOFF = 0.005
+
+// Cap on per-pixel alpha. Lower = the whole layer sits further back.
+const ALPHA_CEILING = 130
 
 export function RippleCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -230,9 +235,11 @@ export function RippleCanvas() {
           if (b > 255) b = 255
 
           const meanSpec = (specR + specG + specB) * 0.3333
+          // Weight tuned so the diffuse body dominates and the specular
+          // highlights don't grab focus.
           const alpha = Math.min(
-            220,
-            activity * 255 * (0.5 + diffuse * 0.5 + meanSpec * 1.5),
+            ALPHA_CEILING,
+            activity * 255 * (0.4 + diffuse * 0.4 + meanSpec * 0.6),
           )
 
           data[idx] = r
@@ -267,7 +274,7 @@ export function RippleCanvas() {
       className="pointer-events-none fixed inset-0 z-[1] h-full w-full"
       style={{
         mixBlendMode: 'screen',
-        opacity: 0.82,
+        opacity: 0.4,
       }}
     />
   )

@@ -1,15 +1,21 @@
+import { useRef } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { TraceStep } from '../types'
 import { StepItem } from './ThinkingTrace'
+import { useLiquidGlass } from '../hooks/useLiquidGlass'
 
 /** Live progress shown while the graph is running — steps stream in as
  * each node finishes, with a trailing pulse for the work still in flight. */
 export function LiveThinking({ steps }: { steps: TraceStep[] }) {
+  const glassRef = useRef<HTMLDivElement>(null)
+  useLiquidGlass(glassRef, { scale: -70, chroma: 4, blur: 3, saturate: 1.5 })
+
   return (
     <motion.div
+      ref={glassRef}
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      className="w-full max-w-xl rounded-lg border border-line bg-card/60"
+      className="glass w-full max-w-xl rounded-lg"
     >
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
         <span className="status-dot relative inline-block h-2 w-2 rounded-full bg-accent" />

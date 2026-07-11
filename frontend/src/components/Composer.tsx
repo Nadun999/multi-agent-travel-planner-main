@@ -1,4 +1,6 @@
+import { useRef } from 'react'
 import { motion } from 'motion/react'
+import { useLiquidGlass } from '../hooks/useLiquidGlass'
 
 interface Props {
   value: string
@@ -8,6 +10,15 @@ interface Props {
 }
 
 export function Composer({ value, loading, onChange, onSend }: Props) {
+  const glassRef = useRef<HTMLDivElement>(null)
+  useLiquidGlass(glassRef, {
+    scale: -80,
+    chroma: 5,
+    blur: 4,
+    saturate: 1.6,
+    border: 0.08,
+  })
+
   function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -22,10 +33,13 @@ export function Composer({ value, loading, onChange, onSend }: Props) {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, delay: 0.15, ease: [0.16, 1, 0.3, 1] }}
-      className="relative z-10 border-t border-line"
+      className="relative z-10"
     >
       <div className="mx-auto w-full max-w-3xl px-6 py-4">
-        <div className="group relative flex items-end gap-3 rounded-2xl border border-line bg-card px-4 py-3 transition-all focus-within:border-accent/50 focus-within:shadow-[0_0_32px_-8px_rgba(94,234,212,0.35)]">
+        <div
+          ref={glassRef}
+          className="glass group relative flex items-end gap-3 rounded-2xl px-4 py-3 transition-all focus-within:border-accent/50 focus-within:shadow-[0_0_32px_-8px_rgba(94,234,212,0.35)]"
+        >
           <textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}

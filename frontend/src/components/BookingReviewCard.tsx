@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { BookingReview } from '../types'
+import { useLiquidGlass } from '../hooks/useLiquidGlass'
 
 export function BookingReviewCard({
   review,
@@ -10,6 +11,8 @@ export function BookingReviewCard({
   onConfirm: (message: string) => void
 }) {
   const [confirmed, setConfirmed] = useState(false)
+  const glassRef = useRef<HTMLDivElement>(null)
+  useLiquidGlass(glassRef, { scale: -90, chroma: 6, blur: 4, saturate: 1.7 })
 
   function handleConfirm() {
     if (confirmed) return
@@ -22,10 +25,12 @@ export function BookingReviewCard({
 
   return (
     <motion.div
+      ref={glassRef}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-      className="w-full max-w-md overflow-hidden rounded-lg border border-accent/30 bg-card"
+      className="glass-strong w-full max-w-md overflow-hidden rounded-lg"
+      style={{ borderColor: 'rgba(94, 234, 212, 0.28)' }}
     >
       <div className="border-b border-line px-4 py-3">
         <div className="flex items-center gap-2">

@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { TraceStep } from '../types'
+import { useLiquidGlass } from '../hooks/useLiquidGlass'
 
 export const NODE_BADGES: Record<string, string> = {
   input: 'input',
@@ -103,6 +104,9 @@ export function StepItem({
 
 export function ThinkingTrace({ trace }: { trace?: TraceStep[] }) {
   const [open, setOpen] = useState(false)
+  const glassRef = useRef<HTMLDivElement>(null)
+  useLiquidGlass(glassRef, { scale: -70, chroma: 4, blur: 3, saturate: 1.5 })
+
   if (!trace || trace.length === 0) return null
 
   const totalMs = trace.reduce((sum, s) => sum + (s.duration_ms || 0), 0)
@@ -110,7 +114,10 @@ export function ThinkingTrace({ trace }: { trace?: TraceStep[] }) {
     totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`
 
   return (
-    <div className="w-full max-w-xl overflow-hidden rounded-lg border border-line bg-card/60">
+    <div
+      ref={glassRef}
+      className="glass w-full max-w-xl overflow-hidden rounded-lg"
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
