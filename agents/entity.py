@@ -31,4 +31,9 @@ class GraphState(TypedDict):
     booking_form: Optional[dict]
     booking_review: Optional[dict]
 
+    # Populated by node functions when an MCP tool call fails ("failed")
+    # so the tracer / UI can surface a FAILED lifecycle state per the SRS.
+    tool_status: Optional[str]
+    tool_error: Optional[str]
+
     response_text: str

@@ -1,88 +1,109 @@
-from typing import Optional, Literal
+"""LangGraph node functions for TripWeaver.
 
+All external service work is routed through `agents/tools.py` → `mcp_client`
+→ the two child MCP servers. Nodes never import `requests`; they never call
+a URL. This is the SRS's "agents talk to services only through MCP" line.
+
+Nodes are async because MCP transport is async. The graph is compiled the
+same way; LangGraph invokes async nodes natively.
+"""
+
+from typing import Literal, Optional
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
-from .tools import get_hotels, search_hotel, book_hotel, get_flights, search_flights, book_flight
-from .llm import llm
-from .prompts import get_system_prompt_for_unknown_node, get_system_prompt_with_history
 from .entity import GraphState
+from .llm import llm
+from .mcp_client import MCPToolCallFailed, MCPToolUnavailable
+from .prompts import (
+    get_system_prompt_for_general_qa,
+    get_system_prompt_with_history,
+)
+from .tools import (
+    book_flight,
+    book_hotel,
+    get_flights,
+    get_hotels,
+    search_flights,
+    search_hotel,
+)
 
 
 class TravelExtraction(BaseModel):
-    intent: Literal["hotel", "flight", "unknown"] = Field(
-        default="unknown",
-        description="Main user intent: hotel, flight, or unknown."
+    intent: Literal["hotel", "flight", "general"] = Field(
+        default="general",
+        description="Main user intent: hotel, flight, or general (general travel Q&A).",
     )
 
-    sub_action: Literal["search", "list_all","book", "general"] = Field(
+    sub_action: Literal["search", "list_all", "book", "general"] = Field(
         default="general",
-        description="Action type: search, list_all, book or general."
+        description="Action type: search, list_all, book or general.",
     )
 
     city: Optional[str] = Field(
         default=None,
-        description="Hotel city name. Example: Mumbai, Colombo, Bangkok."
+        description="Hotel city name. Example: Mumbai, Colombo, Bangkok.",
     )
 
     check_in: Optional[str] = Field(
         default=None,
-        description="Hotel check-in date in YYYY-MM-DD format. Null if not provided."
+        description="Hotel check-in date in YYYY-MM-DD format. Null if not provided.",
     )
 
     check_out: Optional[str] = Field(
         default=None,
-        description="Hotel check-out date in YYYY-MM-DD format. Null if not provided."
+        description="Hotel check-out date in YYYY-MM-DD format. Null if not provided.",
     )
 
     origin: Optional[str] = Field(
         default=None,
-        description="Flight origin city or airport code. Example: BOM, CMB, Mumbai."
+        description="Flight origin city or airport code. Example: BOM, CMB, Mumbai.",
     )
 
     destination: Optional[str] = Field(
         default=None,
-        description="Flight destination city or airport code. Example: DEL, BKK, Delhi."
+        description="Flight destination city or airport code. Example: DEL, BKK, Delhi.",
     )
 
     flight_date: Optional[str] = Field(
         default=None,
-        description="Flight date in YYYY-MM-DD format. Null if not provided."
+        description="Flight date in YYYY-MM-DD format. Null if not provided.",
     )
 
     hotel_id: Optional[str] = Field(
         default=None,
-        description="ID of the hotel to book. Null if not provided."
+        description="ID of the hotel to book. Null if not provided.",
     )
 
     guest_name: Optional[str] = Field(
         default=None,
-        description="Guest full name for hotel booking. Null if not provided."
+        description="Guest full name for hotel booking. Null if not provided.",
     )
 
     guest_email: Optional[str] = Field(
         default=None,
-        description="Guest email for hotel booking. Null if not provided."
+        description="Guest email for hotel booking. Null if not provided.",
     )
 
     room_type: Optional[str] = Field(
         default=None,
-        description="Hotel room type such as single, double, or suite. Null if not provided."
+        description="Hotel room type such as single, double, or suite. Null if not provided.",
     )
 
     flight_id: Optional[str] = Field(
         default=None,
-        description="ID of the flight to book. Null if not provided."
+        description="ID of the flight to book. Null if not provided.",
     )
 
     passenger_name: Optional[str] = Field(
         default=None,
-        description="Passenger full name for flight booking. Null if not provided."
+        description="Passenger full name for flight booking. Null if not provided.",
     )
 
     passenger_email: Optional[str] = Field(
         default=None,
-        description="Passenger email for flight booking. Null if not provided."
+        description="Passenger email for flight booking. Null if not provided.",
     )
 
     confirm_booking: bool = Field(
@@ -125,12 +146,6 @@ def _humanjoin(items: list) -> str:
 
 
 def _booking_followup(state: dict, fields: list, what: str) -> Optional[str]:
-    """Build a slot-filling question for a booking missing required fields.
-
-    Returns None when every field is present (ready to book). Echoes the
-    details already gathered so the user — and the next extraction pass —
-    can see the accumulated booking state.
-    """
     known = [(label, state.get(name)) for name, label, _, _ in fields if state.get(name)]
     missing = [label for name, label, _, _ in fields if not state.get(name)]
 
@@ -146,11 +161,6 @@ def _booking_followup(state: dict, fields: list, what: str) -> Optional[str]:
 
 
 def _booking_form(state: dict, fields: list, kind: str, title: str) -> Optional[dict]:
-    """Structured form for the UI to render. None when ready to book.
-
-    Includes every field (known ones prefilled) so the client can show
-    the full booking and only require the blanks.
-    """
     if all(state.get(name) for name, _, _, _ in fields):
         return None
 
@@ -171,7 +181,6 @@ def _booking_form(state: dict, fields: list, kind: str, title: str) -> Optional[
 
 
 def _booking_review(state: dict, fields: list, kind: str, title: str) -> dict:
-    """Read-only summary of a complete booking, shown for final confirmation."""
     return {
         "kind": kind,
         "title": title,
@@ -182,10 +191,11 @@ def _booking_review(state: dict, fields: list, kind: str, title: str) -> dict:
     }
 
 
-def router(state: GraphState) -> dict:
+async def router(state: GraphState) -> dict:
+    """Intent extraction. Populates state fields consumed by the child nodes."""
     user_message = state["messages"][-1]
     history_messages = state["messages"][:-1]
-    
+
     system_prompt = get_system_prompt_with_history("\n".join(history_messages))
 
     invocation_messages = [SystemMessage(content=system_prompt)]
@@ -196,13 +206,11 @@ def router(state: GraphState) -> dict:
     invocation_messages.append(HumanMessage(content=user_message))
 
     try:
-        extracted = travel_extractor.invoke(invocation_messages)
-
+        extracted = await travel_extractor.ainvoke(invocation_messages)
         data = extracted.dict()
-
     except Exception:
         data = {
-            "intent": "unknown",
+            "intent": "general",
             "sub_action": "general",
             "city": None,
             "check_in": None,
@@ -221,33 +229,26 @@ def router(state: GraphState) -> dict:
         }
 
     return {
-        "intent": data.get("intent", "unknown"),
+        "intent": data.get("intent", "general"),
         "sub_action": data.get("sub_action", "general"),
-
         "city": data.get("city"),
         "check_in": data.get("check_in"),
         "check_out": data.get("check_out"),
-
         "origin": data.get("origin"),
         "destination": data.get("destination"),
         "flight_date": data.get("flight_date"),
-
         "hotel_id": data.get("hotel_id"),
         "guest_name": data.get("guest_name"),
         "guest_email": data.get("guest_email"),
         "room_type": data.get("room_type"),
-
         "flight_id": data.get("flight_id"),
         "passenger_name": data.get("passenger_name"),
         "passenger_email": data.get("passenger_email"),
-
         "confirm_booking": bool(data.get("confirm_booking")),
-
         "hotel_results": [],
         "flight_results": [],
         "response_text": "",
     }
-
 
 
 def _format_hotel(hotel: dict) -> str:
@@ -265,7 +266,7 @@ def _format_hotel(hotel: dict) -> str:
 
     available = hotel.get(
         "available_rooms",
-        hotel.get("availableRooms", hotel.get("available", "N/A"))
+        hotel.get("availableRooms", hotel.get("available", "N/A")),
     )
 
     return (
@@ -280,7 +281,7 @@ def _format_flight(flight: dict) -> str:
 
     number = flight.get(
         "flightNumber",
-        flight.get("flight_number", flight.get("flightNo", "N/A"))
+        flight.get("flight_number", flight.get("flightNo", "N/A")),
     )
 
     origin_data = flight.get("origin", "unknown")
@@ -298,25 +299,18 @@ def _format_flight(flight: dict) -> str:
 
     flight_date = flight.get(
         "flightDate",
-        flight.get("date", flight.get("departure_date", "unknown"))
+        flight.get("date", flight.get("departure_date", "unknown")),
     )
 
-    departure_time = flight.get(
-        "departureTime",
-        flight.get("departure_time", "N/A")
-    )
-
-    arrival_time = flight.get(
-        "arrivalTime",
-        flight.get("arrival_time", "N/A")
-    )
+    departure_time = flight.get("departureTime", flight.get("departure_time", "N/A"))
+    arrival_time = flight.get("arrivalTime", flight.get("arrival_time", "N/A"))
 
     price = flight.get("price", "N/A")
     currency = flight.get("currency", "USD")
 
     seats = flight.get(
         "availableSeats",
-        flight.get("available_seats", flight.get("seats", "N/A"))
+        flight.get("available_seats", flight.get("seats", "N/A")),
     )
 
     return (
@@ -326,16 +320,43 @@ def _format_flight(flight: dict) -> str:
     )
 
 
-
 def _as_list(result, key: str) -> list:
-    if isinstance(result, dict):
-        return result.get(key, [])
+    """Coerce the MCP tool result into a Python list, whichever shape we get."""
     if isinstance(result, list):
         return result
+    if isinstance(result, dict):
+        return result.get(key, [])
     return []
 
 
-def hotel_node(state: GraphState) -> dict:
+# --- Graceful failure helpers ---------------------------------------------
+# Nodes return a `tool_status` field alongside the usual state deltas so the
+# tracer / UI can distinguish "external service went bad" (FAILED) from
+# "everything worked but there were no matches" (SUCCEEDED, empty).
+
+FAILURE_MSG_HOTEL = (
+    "The hotel service is temporarily unavailable — please try again in a moment. "
+    "You can still ask general travel questions or search for flights."
+)
+FAILURE_MSG_FLIGHT = (
+    "The flight service is temporarily unavailable — please try again in a moment. "
+    "You can still ask general travel questions or search for hotels."
+)
+
+
+def _failure_state(kind: str, exc: Exception) -> dict:
+    """Standard shape returned when an MCP call fails."""
+    msg = FAILURE_MSG_HOTEL if kind == "hotel" else FAILURE_MSG_FLIGHT
+    return {
+        "hotel_results": [],
+        "flight_results": [],
+        "response_text": msg,
+        "tool_status": "failed",
+        "tool_error": str(exc),
+    }
+
+
+async def hotel_node(state: GraphState) -> dict:
     city = state.get("city")
     check_in = state.get("check_in")
     check_out = state.get("check_out")
@@ -343,16 +364,19 @@ def hotel_node(state: GraphState) -> dict:
     if state.get("sub_action") == "book":
         hotel_id = state.get("hotel_id")
 
-        # No hotel chosen yet — show options to pick from instead of
-        # asking for an ID the user can't know.
+        # No hotel chosen yet — offer options to pick from.
         if not hotel_id:
             if city:
-                params = {"city": city}
-                if check_in:
-                    params["checkIn"] = check_in
-                if check_out:
-                    params["checkOut"] = check_out
-                hotels = _as_list(search_hotel.invoke(params), "hotels")
+                try:
+                    hotels = _as_list(
+                        await search_hotel(
+                            city=city, checkIn=check_in, checkOut=check_out
+                        ),
+                        "hotels",
+                    )
+                except (MCPToolUnavailable, MCPToolCallFailed) as e:
+                    return _failure_state("hotel", e)
+
                 if hotels:
                     return {
                         "hotel_results": hotels,
@@ -365,9 +389,7 @@ def hotel_node(state: GraphState) -> dict:
                 return {
                     "hotel_results": [],
                     "flight_results": [],
-                    "response_text": (
-                        f"I couldn't find hotels in {city}. Try another city."
-                    ),
+                    "response_text": f"I couldn't find hotels in {city}. Try another city.",
                 }
             return {
                 "hotel_results": [],
@@ -391,7 +413,7 @@ def hotel_node(state: GraphState) -> dict:
                 ),
             }
 
-        # All details present — require an explicit confirmation first.
+        # All details present — require an explicit confirmation.
         if not state.get("confirm_booking"):
             return {
                 "hotel_results": [],
@@ -402,16 +424,17 @@ def hotel_node(state: GraphState) -> dict:
                 ),
             }
 
-        result = book_hotel.invoke(
-            {
-                "hotel_id": hotel_id,
-                "guest_name": state.get("guest_name"),
-                "guest_email": state.get("guest_email"),
-                "check_in_date": state.get("check_in"),
-                "check_out_date": state.get("check_out"),
-                "room_type": state.get("room_type"),
-            }
-        )
+        try:
+            result = await book_hotel(
+                hotel_id=hotel_id,
+                guest_name=state.get("guest_name"),
+                guest_email=state.get("guest_email"),
+                check_in_date=state.get("check_in"),
+                check_out_date=state.get("check_out"),
+                room_type=state.get("room_type"),
+            )
+        except (MCPToolUnavailable, MCPToolCallFailed) as e:
+            return _failure_state("hotel", e)
 
         confirmation = "Hotel booking completed."
         if isinstance(result, dict):
@@ -422,16 +445,14 @@ def hotel_node(state: GraphState) -> dict:
             "response_text": confirmation,
         }
 
-    elif city:
-        params = {"city": city}
-        if check_in:
-            params["checkIn"] = check_in
-        if check_out:
-            params["checkOut"] = check_out
-        result = search_hotel.invoke(params)
-
-    else:
-        result = get_hotels.invoke({})
+    # Non-booking paths: search or list-all.
+    try:
+        if city:
+            result = await search_hotel(city=city, checkIn=check_in, checkOut=check_out)
+        else:
+            result = await get_hotels()
+    except (MCPToolUnavailable, MCPToolCallFailed) as e:
+        return _failure_state("hotel", e)
 
     hotel_results = _as_list(result, "hotels")
 
@@ -452,7 +473,7 @@ def hotel_node(state: GraphState) -> dict:
     }
 
 
-def flight_node(state: GraphState) -> dict:
+async def flight_node(state: GraphState) -> dict:
     origin = state.get("origin")
     destination = state.get("destination")
     flight_date = state.get("flight_date")
@@ -460,14 +481,19 @@ def flight_node(state: GraphState) -> dict:
     if state.get("sub_action") == "book":
         flight_id = state.get("flight_id")
 
-        # No flight chosen yet — show matching flights to pick from
-        # instead of asking for an ID the user can't know.
+        # No flight chosen yet — offer options to pick from.
         if not flight_id:
             if origin and destination:
-                params = {"origin": origin, "destination": destination}
-                if flight_date:
-                    params["date"] = flight_date
-                flights = _as_list(search_flights.invoke(params), "flights")
+                try:
+                    flights = _as_list(
+                        await search_flights(
+                            origin=origin, destination=destination, date=flight_date
+                        ),
+                        "flights",
+                    )
+                except (MCPToolUnavailable, MCPToolCallFailed) as e:
+                    return _failure_state("flight", e)
+
                 if flights:
                     return {
                         "hotel_results": [],
@@ -507,7 +533,7 @@ def flight_node(state: GraphState) -> dict:
                 ),
             }
 
-        # All details present — require an explicit confirmation first.
+        # Confirmation gate.
         if not state.get("confirm_booking"):
             return {
                 "hotel_results": [],
@@ -518,13 +544,14 @@ def flight_node(state: GraphState) -> dict:
                 ),
             }
 
-        result = book_flight.invoke(
-            {
-                "flight_id": flight_id,
-                "passenger_name": state.get("passenger_name"),
-                "passenger_email": state.get("passenger_email"),
-            }
-        )
+        try:
+            result = await book_flight(
+                flight_id=flight_id,
+                passenger_name=state.get("passenger_name"),
+                passenger_email=state.get("passenger_email"),
+            )
+        except (MCPToolUnavailable, MCPToolCallFailed) as e:
+            return _failure_state("flight", e)
 
         confirmation = "Flight booking completed."
         if isinstance(result, dict):
@@ -535,12 +562,12 @@ def flight_node(state: GraphState) -> dict:
             "response_text": confirmation,
         }
 
-    elif origin and destination:
-        params = {"origin": origin, "destination": destination}
-        if flight_date:
-            params["date"] = flight_date
-        result = search_flights.invoke(params)
-
+    # Non-booking paths.
+    if origin and destination:
+        try:
+            result = await search_flights(origin=origin, destination=destination, date=flight_date)
+        except (MCPToolUnavailable, MCPToolCallFailed) as e:
+            return _failure_state("flight", e)
     elif origin or destination:
         return {
             "hotel_results": [],
@@ -550,9 +577,11 @@ def flight_node(state: GraphState) -> dict:
                 "For example: 'flight from BOM to DEL'."
             ),
         }
-
     else:
-        result = get_flights.invoke({})
+        try:
+            result = await get_flights()
+        except (MCPToolUnavailable, MCPToolCallFailed) as e:
+            return _failure_state("flight", e)
 
     flight_results = _as_list(result, "flights")
 
@@ -573,11 +602,13 @@ def flight_node(state: GraphState) -> dict:
     }
 
 
-def unknown_node(state: GraphState) -> dict:
+async def general_qa_node(state: GraphState) -> dict:
+    """General travel Q&A agent — for questions that aren't a hotel or flight
+    lookup/booking (destinations, visas, packing, weather guidance, etc.)."""
     user_message = state["messages"][-1]
     history_messages = state["messages"][:-1]
 
-    system_prompt = get_system_prompt_for_unknown_node("\n".join(history_messages))
+    system_prompt = get_system_prompt_for_general_qa("\n".join(history_messages))
 
     invocation_messages = [SystemMessage(content=system_prompt)]
     for i in range(0, len(history_messages), 2):
@@ -587,8 +618,7 @@ def unknown_node(state: GraphState) -> dict:
     invocation_messages.append(HumanMessage(content=user_message))
 
     try:
-        response = llm.invoke(invocation_messages)
-
+        response = await llm.ainvoke(invocation_messages)
         return {
             "hotel_results": [],
             "flight_results": [],
@@ -603,12 +633,9 @@ def unknown_node(state: GraphState) -> dict:
         }
 
 
-
-def generate_response(state: GraphState) -> dict:
+async def generate_response(state: GraphState) -> dict:
     if state.get("response_text"):
-        return {
-            "response_text": state["response_text"]
-        }
+        return {"response_text": state["response_text"]}
 
     hotel_results = state.get("hotel_results", [])
     flight_results = state.get("flight_results", [])
@@ -616,7 +643,6 @@ def generate_response(state: GraphState) -> dict:
     if hotel_results:
         count = len(hotel_results)
         lines = [_format_hotel(hotel) for hotel in hotel_results[:5]]
-
         return {
             "response_text": (
                 f"I found {count} hotel option{'s' if count != 1 else ''}:\n"
@@ -627,7 +653,6 @@ def generate_response(state: GraphState) -> dict:
     if flight_results:
         count = len(flight_results)
         lines = [_format_flight(flight) for flight in flight_results[:5]]
-
         return {
             "response_text": (
                 f"I found {count} flight option{'s' if count != 1 else ''}:\n"
@@ -635,13 +660,11 @@ def generate_response(state: GraphState) -> dict:
             )
         }
 
-    return {
-        "response_text": "I couldn't find matching travel options."
-    }
+    return {"response_text": "I couldn't find matching travel options."}
 
 
 def route_after_extraction(state: GraphState) -> str:
-    intent = state.get("intent", "unknown")
+    intent = state.get("intent", "general")
 
     if intent == "hotel":
         return "hotel"
@@ -649,4 +672,4 @@ def route_after_extraction(state: GraphState) -> str:
     if intent == "flight":
         return "flight"
 
-    return "unknown"
+    return "general"

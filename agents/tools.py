@@ -1,166 +1,143 @@
-﻿from typing import Any, List, Optional
+"""Tools façade — thin async wrappers that dispatch to MCP tools.
 
-import requests
-from langchain_core.tools import tool
+Every function here calls exactly one MCP tool (living in mcp_servers/) and
+returns a normalized Python value. Nodes only import these names.
+
+Return-shape notes
+------------------
+langchain-mcp-adapters returns tool output as a list of LangChain content
+blocks. For structured JSON output (our list[dict] tools), each record
+comes back as its own text block:
+    {"type": "text", "text": "<json>"}
+`_unwrap` collapses that back into the Python object the nodes expect.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Optional
+
+from .mcp_client import call_mcp
 
 
-HOTEL_API_BASE = "https://standing-fish-574.convex.site/hotels"
-FLIGHT_API_BASE = "https://standing-fish-574.convex.site/flights"
+def _unwrap(raw: Any) -> Any:
+    """Turn a langchain-mcp-adapters tool result into a Python object.
 
+    Handles four shapes:
+      1. List of text blocks (one JSON object each) → parse each, collect.
+      2. Single text block → parse its `text`.
+      3. Raw JSON string → parse.
+      4. Already a Python list/dict/primitive → return as-is.
 
-def _fetch_json(url: str, params: Optional[dict] = None) -> Any:
-    try:
-        response = requests.get(
-            url,
-            params=params,
-        )
-        return response.json()
-
-    except Exception as e:
-        return None
-
-
-@tool
-def get_hotels() -> List[dict]:
+    Anything that fails to parse falls through as-is; upstream code decides
+    whether that's an error or just an unusual result.
     """
-    Get a list of all available hotels.
-    Use this when the user asks to show/list all hotels.
-    """
-    data = _fetch_json(HOTEL_API_BASE)
+    # (4) primitive / already-parsed
+    if raw is None or isinstance(raw, (dict, int, float, bool)):
+        return raw
 
-    if isinstance(data, dict):
-        return data.get("hotels", [])
+    # (1, 2) list of text blocks
+    if isinstance(raw, list):
+        # Detect content-block shape by looking at the first element.
+        if raw and isinstance(raw[0], dict) and raw[0].get("type") == "text":
+            parsed: list[Any] = []
+            for block in raw:
+                text = block.get("text", "") if isinstance(block, dict) else ""
+                try:
+                    parsed.append(json.loads(text))
+                except (json.JSONDecodeError, TypeError):
+                    parsed.append(text)
+            # Single-block responses aren't lists at the semantic level — a
+            # book_hotel result comes back as one block wrapping one dict.
+            if len(parsed) == 1 and not isinstance(parsed[0], list):
+                return parsed[0]
+            return parsed
+        # A list of already-parsed items — return as-is.
+        return raw
 
-    return []
+    # (3) raw string
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+
+    return raw
 
 
-@tool
-def search_hotel(
+# ---- Hotel tools -----------------------------------------------------
+
+async def get_hotels() -> Any:
+    """List every hotel (full records)."""
+    return _unwrap(await call_mcp("get_all_hotels"))
+
+
+async def search_hotel(
     city: str,
     checkIn: Optional[str] = None,
     checkOut: Optional[str] = None,
-) -> List[dict]:
-    """
-    Search for hotels by city and optional check-in/check-out dates.
-
-    Args:
-        city: Hotel city name. Example: Bangkok, Colombo, Singapore.
-        checkIn: Optional check-in date in YYYY-MM-DD format.
-        checkOut: Optional check-out date in YYYY-MM-DD format.
-    """
-    params = {"city": city}
-
+) -> Any:
+    """Search hotels by city (+ optional dates)."""
+    kwargs: dict[str, Any] = {"city": city}
     if checkIn:
-        params["checkIn"] = checkIn
-
+        kwargs["checkIn"] = checkIn
     if checkOut:
-        params["checkOut"] = checkOut
-
-    data = _fetch_json(f"{HOTEL_API_BASE}/search", params=params)
-
-    if isinstance(data, dict):
-        return data.get("hotels", [])
-
-    return []
+        kwargs["checkOut"] = checkOut
+    return _unwrap(await call_mcp("search_hotels", **kwargs))
 
 
-@tool
-def book_hotel(
+async def book_hotel(
     hotel_id: str,
     guest_name: str,
     guest_email: str,
     check_in_date: str,
     check_out_date: str,
     room_type: str,
-) -> dict:
-    """Book a hotel room.
-
-    Args:
-        hotel_id: ID of the hotel to book
-        guest_name: Full name of the guest
-        guest_email: Email of the guest
-        check_in_date: Check-in date (YYYY-MM-DD)
-        check_out_date: Check-out date (YYYY-MM-DD)
-        room_type: Type of room (single, double, suite)
-    """
-    payload = {
-        "hotelId": hotel_id,
-        "guestName": guest_name,
-        "guestEmail": guest_email,
-        "checkInDate": check_in_date,
-        "checkOutDate": check_out_date,
-        "roomType": room_type,
-    }
-    response = requests.post(f"{HOTEL_API_BASE}/book", json=payload)
-    return response.json()
-
-@tool
-def get_flights() -> List[dict]:
-    """
-    Get a list of all available flights.
-    Use this when the user asks to show/list all flights.
-    """
-    data = _fetch_json(FLIGHT_API_BASE)
-
-    if isinstance(data, dict):
-        return data.get("flights", [])
-
-    return []
+) -> Any:
+    """Book a hotel."""
+    return _unwrap(
+        await call_mcp(
+            "book_hotel",
+            hotel_id=hotel_id,
+            guest_name=guest_name,
+            guest_email=guest_email,
+            check_in_date=check_in_date,
+            check_out_date=check_out_date,
+            room_type=room_type,
+        )
+    )
 
 
-@tool
-def search_flights(
+# ---- Flight tools ----------------------------------------------------
+
+async def get_flights() -> Any:
+    """List every flight (full records)."""
+    return _unwrap(await call_mcp("get_all_flights"))
+
+
+async def search_flights(
     origin: str,
     destination: str,
     date: Optional[str] = None,
-) -> List[dict]:
-    """
-    Search for flights by origin, destination, and optional travel date.
-
-    Args:
-        origin: Flight origin city or airport code. Example: CMB, Bangkok.
-        destination: Flight destination city or airport code. Example: BKK, Singapore.
-        date: Optional flight date in YYYY-MM-DD format.
-    """
-
-    if origin and len(origin) == 3 and origin.isalpha():
-        normalized_origin = origin.upper()
-    else:
-        normalized_origin = origin
-
-    if destination and len(destination) == 3 and destination.isalpha():
-        normalized_destination = destination.upper()
-    else:
-        normalized_destination = destination
-
-    params = {
-        "origin": normalized_origin,
-        "destination": normalized_destination,
-    }
-
+) -> Any:
+    """Search flights by origin + destination (+ optional date)."""
+    kwargs: dict[str, Any] = {"origin": origin, "destination": destination}
     if date:
-        params["date"] = date
+        kwargs["date"] = date
+    return _unwrap(await call_mcp("search_flights", **kwargs))
 
-    data = _fetch_json(f"{FLIGHT_API_BASE}/search", params=params)
 
-    if isinstance(data, dict):
-        return data.get("flights", [])
-
-    return []
-
-@tool
-def book_flight(flight_id: str, passenger_name: str, passenger_email: str) -> dict:
-    """Book a flight ticket.
-
-    Args:
-        flight_id: ID of the flight to book
-        passenger_name: Full name of the passenger
-        passenger_email: Email of the passenger
-    """
-    payload = {
-        "flightId": flight_id,
-        "passengerName": passenger_name,
-        "passengerEmail": passenger_email,
-    }
-    response = requests.post(f"{FLIGHT_API_BASE}/book", json=payload)
-    return response.json()
+async def book_flight(
+    flight_id: str,
+    passenger_name: str,
+    passenger_email: str,
+) -> Any:
+    """Book a flight."""
+    return _unwrap(
+        await call_mcp(
+            "book_flight",
+            flight_id=flight_id,
+            passenger_name=passenger_name,
+            passenger_email=passenger_email,
+        )
+    )
