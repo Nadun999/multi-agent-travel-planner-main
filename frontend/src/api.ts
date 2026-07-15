@@ -19,17 +19,24 @@ export async function sendChat(message: string): Promise<ChatResponse> {
 
 interface StreamHandlers {
   onStep: (step: TraceStep) => void
+  onToken?: (text: string) => void
   onDone: (data: ChatResponse) => void
 }
 
+type StreamEvent =
+  | { type: 'step'; step: TraceStep }
+  | { type: 'token'; text: string }
+  | ({ type: 'done' } & ChatResponse)
+
 /**
- * Streams the agent run via Server-Sent Events. Each `step` event fires
- * onStep as a node finishes; the terminating `done` event carries the
- * final response, results, and full trace.
+ * Streams the agent run via Server-Sent Events.
+ *   step   — node completion (one per node)
+ *   token  — an LLM token from a streamable node (general_qa_node)
+ *   done   — terminal event with final response, results, and full trace
  */
 export async function sendChatStream(
   message: string,
-  { onStep, onDone }: StreamHandlers,
+  { onStep, onToken, onDone }: StreamHandlers,
 ): Promise<void> {
   const res = await fetch(STREAM_URL, {
     method: 'POST',
@@ -59,12 +66,12 @@ export async function sendChatStream(
       const json = line.slice(5).trim()
       if (!json) continue
 
-      const evt = JSON.parse(json) as
-        | { type: 'step'; step: TraceStep }
-        | ({ type: 'done' } & ChatResponse)
+      const evt = JSON.parse(json) as StreamEvent
 
       if (evt.type === 'step') {
         onStep(evt.step)
+      } else if (evt.type === 'token') {
+        onToken?.(evt.text)
       } else if (evt.type === 'done') {
         const { type: _type, ...data } = evt
         void _type

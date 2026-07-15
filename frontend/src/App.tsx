@@ -73,6 +73,7 @@ function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [liveTrace, setLiveTrace] = useState<TraceStep[]>([])
+  const [liveText, setLiveText] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -80,7 +81,7 @@ function App() {
       top: scrollRef.current.scrollHeight,
       behavior: 'smooth',
     })
-  }, [messages, loading, liveTrace])
+  }, [messages, loading, liveTrace, liveText])
 
   async function send(text: string) {
     if (!text || loading) return
@@ -93,10 +94,12 @@ function App() {
     setMessages((prev) => [...prev, userMsg])
     setLoading(true)
     setLiveTrace([])
+    setLiveText('')
 
     try {
       await sendChatStream(text, {
         onStep: (step) => setLiveTrace((prev) => [...prev, step]),
+        onToken: (t) => setLiveText((prev) => prev + t),
         onDone: (data) =>
           setMessages((prev) => [
             ...prev,
@@ -124,6 +127,7 @@ function App() {
     } finally {
       setLoading(false)
       setLiveTrace([])
+      setLiveText('')
     }
   }
 
@@ -157,8 +161,21 @@ function App() {
           )}
 
           {loading && (
-            <div className="flex justify-start">
-              <LiveThinking steps={liveTrace} />
+            <div className="flex flex-col gap-3">
+              <div className="flex justify-start">
+                <LiveThinking steps={liveTrace} />
+              </div>
+
+              {liveText && (
+                <div className="flex justify-start">
+                  <div className="max-w-[88%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+                    <div className="whitespace-pre-wrap">
+                      {liveText}
+                      <span className="caret">&nbsp;</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

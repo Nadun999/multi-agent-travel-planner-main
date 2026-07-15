@@ -8,6 +8,7 @@ export const NODE_BADGES: Record<string, string> = {
   router: 'route',
   hotel_node: 'hotel',
   flight_node: 'flight',
+  general_qa_node: 'general',
   unknown_node: 'general',
   generate_response: 'compose',
 }
