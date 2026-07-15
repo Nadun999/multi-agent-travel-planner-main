@@ -1,0 +1,18 @@
+# Render blueprint — one Docker service running FastAPI + both MCP
+# subprocesses. Push this repo to GitHub, then in Render:
+# New → Blueprint → point at this repo. Render reads this file and
+# provisions the service automatically.
+services:
+  - type: web
+    name: tripweaver-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false  # Set the real value in the Render dashboard
+      - key: PORT
+        value: "8000"
+      - key: AUTOSPAWN_MCP
+        value: "1"
+    healthCheckPath: /
